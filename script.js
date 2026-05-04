@@ -1,81 +1,66 @@
 /**
- * script.js — Lógica principal de SteamInfo
- * Maneja: consumo de la Steam Web API (via proxy CORS), caché en localStorage,
- * renderizado de vistas, paginación, filtros, exportación JSON y estado de la app.
+ * script.js — SteamInfo
+ * Lógica completa: API Steam, caché localStorage, renderizado de vistas,
+ * paginación, filtros, exportación JSON.
+ * Diseñado para la estructura de 3 columnas fiel a la imagen de referencia.
  */
 
-/* ═══════════════════════════════════════════════
+"use strict";
+
+/* ═══════════════════════════════════════
    ESTADO GLOBAL
-   ═══════════════════════════════════════════════ */
+   ═══════════════════════════════════════ */
 const STATE = {
   apiKey:        "",
   steamId:       "",
-  playerData:    null,   // GetPlayerSummaries
-  ownedGames:    [],     // GetOwnedGames
-  recentGames:   [],     // GetRecentlyPlayedGames
-  friends:       [],     // GetFriendList
-  banInfo:       null,   // GetPlayerBans
-  achievements:  [],     // GetPlayerAchievements (juego seleccionado)
-  activeSection: "profile",
-  gamesPage:     1,
+  activeSection: "recent",
+  playerData:    null,
+  ownedGames:    [],
+  recentGames:   [],
+  friends:       [],
+  banInfo:       null,
+  achievements:  [],
+  achGameName:   "",
+  achFilter:     "all",
   gamesFilter:   "",
   gamesSort:     "hours",
-  achFilter:     "all",
+  gamesPage:     1,
   friendsPage:   1,
 };
 
-/* ═══════════════════════════════════════════════
-   UTILIDADES DE CACHÉ (localStorage)
-   ═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════
+   CACHÉ (localStorage, TTL 5 min)
+   ═══════════════════════════════════════ */
 const Cache = {
-  /** Guarda un valor con TTL. */
   set(key, data) {
-    const entry = { data, ts: Date.now() };
-    try {
-      localStorage.setItem(CONFIG.CACHE_PREFIX + key, JSON.stringify(entry));
-    } catch (e) { /* cuota excedida, ignorar */ }
+    try { localStorage.setItem("si_" + key, JSON.stringify({ data, ts: Date.now() })); }
+    catch { /* cuota */ }
   },
-
-  /** Retorna el valor cacheado si no expiró, o null. */
   get(key) {
     try {
-      const raw = localStorage.getItem(CONFIG.CACHE_PREFIX + key);
+      const raw = localStorage.getItem("si_" + key);
       if (!raw) return null;
       const { data, ts } = JSON.parse(raw);
-      if (Date.now() - ts > CONFIG.CACHE_TTL_MS) {
-        localStorage.removeItem(CONFIG.CACHE_PREFIX + key);
-        return null;
-      }
+      if (Date.now() - ts > CONFIG.CACHE_TTL_MS) { localStorage.removeItem("si_" + key); return null; }
       return data;
     } catch { return null; }
   },
-
-  /** Elimina todas las entradas de caché de SteamInfo. */
   clearAll() {
-    Object.keys(localStorage)
-      .filter(k => k.startsWith(CONFIG.CACHE_PREFIX))
-      .forEach(k => localStorage.removeItem(k));
-    showToast("Caché limpiada correctamente.", "success");
+    Object.keys(localStorage).filter(k => k.startsWith("si_")).forEach(k => localStorage.removeItem(k));
+    toast("Caché limpiada.", "success");
   },
 };
 
-/* ═══════════════════════════════════════════════
-   API — LLAMADAS A STEAM
-   ═══════════════════════════════════════════════ */
-
-/**
- * Construye la URL final con proxy CORS y llama a la API de Steam.
- * @param {string} endpoint - Ruta del endpoint (ej: "/ISteamUser/GetPlayerSummaries/v2/")
- * @param {object} params   - Parámetros adicionales (sin key ni formato)
- */
+/* ═══════════════════════════════════════
+   PETICIONES A LA API
+   ═══════════════════════════════════════ */
 async function steamFetch(endpoint, params = {}) {
   const url = new URL(CONFIG.STEAM_API_BASE + endpoint);
-  url.searchParams.set("key", STATE.apiKey);
+  url.searchParams.set("key",    STATE.apiKey);
   url.searchParams.set("format", "json");
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
   const proxied = CONFIG.CORS_PROXY + encodeURIComponent(url.toString());
-
   const res = await fetch(proxied);
   if (!res.ok) {
     if (res.status === 429) throw new Error(CONFIG.ERRORS.RATE_LIMIT);
@@ -85,810 +70,564 @@ async function steamFetch(endpoint, params = {}) {
   return res.json();
 }
 
-/**
- * Resuelve una URL de vanidad (ej: "gaben") o devuelve el SteamID64 directo.
- * Un SteamID64 válido es un número de 17 dígitos que empieza con 7656.
- */
 async function resolveSteamId(input) {
   input = input.trim();
-
-  // Extraer id o nombre de vanity de URLs completas
   const urlMatch = input.match(/steamcommunity\.com\/(id|profiles)\/([^/]+)/i);
-  if (urlMatch) {
-    if (urlMatch[1] === "profiles") input = urlMatch[2];
-    else input = urlMatch[2];
-  }
-
-  // Si ya parece un SteamID64 (17 dígitos empezando por 7656)
+  if (urlMatch) input = urlMatch[2];
   if (/^7656\d{13}$/.test(input)) return input;
-
-  // Intentar resolver como vanity URL
-  const cacheKey = `vanity_${input}`;
-  const cached = Cache.get(cacheKey);
+  const cKey = "vanity_" + input;
+  const cached = Cache.get(cKey);
   if (cached) return cached;
-
   const data = await steamFetch(CONFIG.ENDPOINTS.RESOLVE_VANITY, { vanityurl: input });
-  if (data?.response?.success === 1) {
-    Cache.set(cacheKey, data.response.steamid);
-    return data.response.steamid;
-  }
-
+  if (data?.response?.success === 1) { Cache.set(cKey, data.response.steamid); return data.response.steamid; }
   throw new Error(CONFIG.ERRORS.VANITY_NOT_FOUND);
 }
 
-/** Obtiene el resumen del jugador. */
-async function fetchPlayerSummary(steamId) {
-  const cacheKey = `summary_${steamId}`;
-  const cached = Cache.get(cacheKey);
+async function fetchPlayerSummary(id) {
+  const cKey = "sum_" + id;
+  const cached = Cache.get(cKey);
   if (cached) return cached;
-
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, { steamids: steamId });
-  const players = data?.response?.players;
-  if (!players?.length) throw new Error(CONFIG.ERRORS.INVALID_STEAM_ID);
-
-  Cache.set(cacheKey, players[0]);
-  return players[0];
+  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, { steamids: id });
+  const p = data?.response?.players?.[0];
+  if (!p) throw new Error(CONFIG.ERRORS.INVALID_STEAM_ID);
+  Cache.set(cKey, p);
+  return p;
 }
 
-/** Obtiene los juegos del jugador. */
-async function fetchOwnedGames(steamId) {
-  const cacheKey = `owned_${steamId}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  const data = await steamFetch(CONFIG.ENDPOINTS.OWNED_GAMES, {
-    steamid: steamId,
-    include_appinfo: 1,
-    include_played_free_games: 1,
-  });
-  const games = data?.response?.games || [];
-  Cache.set(cacheKey, games);
-  return games;
+async function fetchOwnedGames(id) {
+  const cKey = "owned_" + id;
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const data = await steamFetch(CONFIG.ENDPOINTS.OWNED_GAMES, { steamid: id, include_appinfo: 1, include_played_free_games: 1 });
+  const g = data?.response?.games || [];
+  Cache.set(cKey, g);
+  return g;
 }
 
-/** Obtiene los juegos jugados recientemente. */
-async function fetchRecentGames(steamId) {
-  const cacheKey = `recent_${steamId}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  const data = await steamFetch(CONFIG.ENDPOINTS.RECENT_GAMES, {
-    steamid: steamId,
-    count: 10,
-  });
-  const games = data?.response?.games || [];
-  Cache.set(cacheKey, games);
-  return games;
+async function fetchRecentGames(id) {
+  const cKey = "recent_" + id;
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const data = await steamFetch(CONFIG.ENDPOINTS.RECENT_GAMES, { steamid: id, count: 10 });
+  const g = data?.response?.games || [];
+  Cache.set(cKey, g);
+  return g;
 }
 
-/** Obtiene la lista de amigos. */
-async function fetchFriends(steamId) {
-  const cacheKey = `friends_${steamId}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  const data = await steamFetch(CONFIG.ENDPOINTS.FRIEND_LIST, {
-    steamid: steamId,
-    relationship: "friend",
-  });
-  const friends = data?.friendslist?.friends || [];
-  Cache.set(cacheKey, friends);
-  return friends;
+async function fetchFriends(id) {
+  const cKey = "friends_" + id;
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const data = await steamFetch(CONFIG.ENDPOINTS.FRIEND_LIST, { steamid: id, relationship: "friend" });
+  const f = data?.friendslist?.friends || [];
+  Cache.set(cKey, f);
+  return f;
 }
 
-/** Obtiene los datos de amigos en batch (máx 100 por llamada). */
-async function fetchFriendsSummaries(steamIds) {
-  const cacheKey = `fsum_${steamIds.slice(0, 5).join("_")}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  // Steam API acepta hasta 100 IDs separados por coma
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, {
-    steamids: steamIds.join(","),
-  });
-  const players = data?.response?.players || [];
-  Cache.set(cacheKey, players);
-  return players;
+async function fetchFriendsSummaries(ids) {
+  const cKey = "fsum_" + ids.slice(0, 5).join("_");
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, { steamids: ids.join(",") });
+  const p = data?.response?.players || [];
+  Cache.set(cKey, p);
+  return p;
 }
 
-/** Obtiene información de baneos. */
-async function fetchBans(steamId) {
-  const cacheKey = `bans_${steamId}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_BANS, { steamids: steamId });
-  const ban = data?.players?.[0] || null;
-  Cache.set(cacheKey, ban);
-  return ban;
+async function fetchBans(id) {
+  const cKey = "bans_" + id;
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_BANS, { steamids: id });
+  const b = data?.players?.[0] || null;
+  Cache.set(cKey, b);
+  return b;
 }
 
-/** Obtiene los logros de un juego específico. */
 async function fetchAchievements(steamId, appId) {
-  const cacheKey = `ach_${steamId}_${appId}`;
-  const cached = Cache.get(cacheKey);
-  if (cached) return cached;
-
-  // Obtener los logros del jugador y el schema del juego en paralelo
-  const [playerData, schemaData] = await Promise.allSettled([
+  const cKey = "ach_" + steamId + "_" + appId;
+  const c = Cache.get(cKey);
+  if (c) return c;
+  const [playerR, schemaR] = await Promise.allSettled([
     steamFetch(CONFIG.ENDPOINTS.ACHIEVEMENTS, { steamid: steamId, appid: appId, l: "spanish" }),
-    steamFetch(CONFIG.ENDPOINTS.GAME_SCHEMA, { appid: appId, l: "spanish" }),
+    steamFetch(CONFIG.ENDPOINTS.GAME_SCHEMA,  { appid: appId, l: "spanish" }),
   ]);
-
-  if (playerData.status === "rejected") throw new Error(CONFIG.ERRORS.NO_ACHIEVEMENTS);
-
-  const playerAchs = playerData.value?.playerstats?.achievements || [];
-  const schemaAchs = schemaData.status === "fulfilled"
-    ? (schemaData.value?.game?.availableGameStats?.achievements || [])
-    : [];
-
-  // Combinar datos del jugador con iconos y descripciones del schema
+  if (playerR.status === "rejected") throw new Error(CONFIG.ERRORS.NO_ACHIEVEMENTS);
+  const playerAchs = playerR.value?.playerstats?.achievements || [];
+  const schemaAchs = schemaR.status === "fulfilled"
+    ? (schemaR.value?.game?.availableGameStats?.achievements || []) : [];
   const schemaMap = Object.fromEntries(schemaAchs.map(a => [a.name, a]));
   const combined = playerAchs.map(a => ({
     ...a,
-    displayName:  schemaMap[a.apiname]?.displayName  || a.apiname,
-    description:  schemaMap[a.apiname]?.description  || "",
-    icon:         schemaMap[a.apiname]?.icon         || "",
-    icongray:     schemaMap[a.apiname]?.icongray     || "",
+    displayName: schemaMap[a.apiname]?.displayName || a.apiname,
+    description: schemaMap[a.apiname]?.description || "",
+    icon:        schemaMap[a.apiname]?.icon        || "",
+    icongray:    schemaMap[a.apiname]?.icongray    || "",
   }));
-
-  Cache.set(cacheKey, combined);
+  Cache.set(cKey, combined);
   return combined;
 }
 
-/* ═══════════════════════════════════════════════
-   RENDER — FUNCIONES DE INTERFAZ
-   ═══════════════════════════════════════════════ */
-
-/** Formatea minutos a "X h Y min". */
-function formatHours(minutes) {
-  if (!minutes) return "0 h";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h === 0) return `${m} min`;
-  if (m === 0) return `${h} h`;
-  return `${h} h ${m} min`;
+/* ═══════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════ */
+function esc(s) {
+  if (!s) return "";
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
 
-/** Formatea un timestamp UNIX a fecha legible. */
-function formatDate(ts) {
+function fmtHours(min) {
+  if (!min) return "0 h";
+  const h = Math.floor(min / 60), m = min % 60;
+  if (h === 0) return m + " min";
+  if (m === 0) return h + " h";
+  return h + " h " + m + " min";
+}
+
+function fmtDate(ts) {
   if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleDateString("es-AR", {
-    year: "numeric", month: "long", day: "numeric",
-  });
+  return new Date(ts * 1000).toLocaleDateString("es-AR", { year:"numeric", month:"long", day:"numeric" });
 }
 
-/** Formatea un timestamp UNIX a fecha corta. */
-function formatDateShort(ts) {
+function fmtDateShort(ts) {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleDateString("es-AR");
 }
 
-/** Genera la URL del avatar de un juego desde Steam CDN. */
-function gameImgUrl(appId, imgHash) {
-  if (!imgHash) return CONFIG.DEFAULT_GAME_IMG;
-  return `${CONFIG.STEAM_CDN}/${appId}/${imgHash}.jpg`;
+function gameImg(appid, hash) {
+  if (!hash) return CONFIG.DEFAULT_GAME_IMG;
+  return CONFIG.STEAM_CDN + "/" + appid + "/" + hash + ".jpg";
 }
 
-/** Renderiza el sidebar con datos del perfil. */
-function renderSidebarProfile(player) {
-  const stateInfo = CONFIG.PLAYER_STATES[player.personastate] || CONFIG.PLAYER_STATES[0];
-  const el = document.getElementById("sidebar-profile");
-  el.innerHTML = `
-    <div class="avatar-wrapper">
-      <img src="${player.avatarfull || CONFIG.DEFAULT_AVATAR}" alt="Avatar" loading="lazy">
-      <span class="avatar-status" style="background:${stateInfo.color}" title="${stateInfo.label}"></span>
-    </div>
-    <div class="sidebar-name">${escHtml(player.personaname)}</div>
-    <span class="sidebar-state" style="background:${stateInfo.color}">${stateInfo.label}</span>
-    ${player.loccountrycode ? `<div class="sidebar-country">📍 ${player.loccountrycode}</div>` : ""}
-  `;
-  el.classList.add("visible");
+function stateInfo(code) {
+  return CONFIG.PLAYER_STATES[code] || CONFIG.PLAYER_STATES[0];
 }
 
-/** Actualiza las badges de conteos en el sidebar nav. */
-function updateNavBadges() {
-  document.getElementById("badge-games").textContent   = STATE.ownedGames.length  || "";
-  document.getElementById("badge-friends").textContent = STATE.friends.length      || "";
+function makePagination(current, total, ns) {
+  const pages = [];
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i === total || Math.abs(i - current) <= 2) pages.push(i);
+    else if (pages[pages.length-1] !== "…") pages.push("…");
+  }
+  return `<div class="pagination">
+    <button class="pg-btn" data-p="${current-1}" ${current<=1?"disabled":""}>‹</button>
+    ${pages.map(p => p==="…"
+      ? `<span style="color:var(--text-muted);padding:0 3px">…</span>`
+      : `<button class="pg-btn ${p===current?"active":""}" data-p="${p}">${p}</button>`
+    ).join("")}
+    <button class="pg-btn" data-p="${current+1}" ${current>=total?"disabled":""}>›</button>
+  </div>`;
 }
 
-/** Renderiza la vista de Perfil (resumen). */
-function renderProfile() {
-  const p = STATE.playerData;
-  if (!p) return;
+function bindPagination(container, ns) {
+  container.querySelectorAll(".pg-btn[data-p]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (ns === "games")   { STATE.gamesPage   = +btn.dataset.p; renderGames(); }
+      if (ns === "friends") { STATE.friendsPage = +btn.dataset.p; renderFriends(); }
+    });
+  });
+}
 
-  const stateInfo = CONFIG.PLAYER_STATES[p.personastate] || CONFIG.PLAYER_STATES[0];
-  const visibility = CONFIG.PROFILE_VISIBILITY[p.communityvisibilitystate] || "Desconocido";
-  const ban = STATE.banInfo;
+/* ═══════════════════════════════════════
+   PANEL IZQUIERDO
+   ═══════════════════════════════════════ */
+function renderLeftPanel(p) {
+  const si = stateInfo(p.personastate);
 
-  let banHtml = "";
-  if (ban) {
-    const hasBan = ban.VACBanned || ban.CommunityBanned || ban.EconomyBan !== "none";
-    banHtml = hasBan
-      ? `<span class="ban-badge">⚠️ Baneado</span>`
-      : `<span class="clean-badge">✅ Sin baneos</span>`;
+  // Ocultar placeholder, mostrar datos reales
+  document.getElementById("lp-avatar-placeholder").classList.add("hidden");
+  const img = document.getElementById("lp-avatar-img");
+  img.src = p.avatarfull || CONFIG.DEFAULT_AVATAR;
+  img.classList.remove("hidden");
+
+  const dot = document.getElementById("lp-status-dot");
+  dot.style.background = si.color;
+  dot.classList.remove("hidden");
+
+  document.getElementById("lp-name").textContent = p.personaname;
+
+  const stateEl = document.getElementById("lp-state");
+  stateEl.textContent = si.label;
+  stateEl.style.background = si.color;
+  stateEl.classList.remove("hidden");
+
+  if (p.loccountrycode) {
+    const c = document.getElementById("lp-country");
+    c.textContent = "📍 " + p.loccountrycode;
+    c.classList.remove("hidden");
   }
 
-  document.getElementById("view-profile").innerHTML = `
-    <div class="section-header">
-      <h2>Perfil</h2>
-    </div>
+  // Metadatos
+  const meta = document.getElementById("lp-meta");
+  const rows = [];
+  if (p.timecreated) rows.push(["Cuenta creada", fmtDateShort(p.timecreated)]);
+  if (p.realname)    rows.push(["Nombre real",   esc(p.realname)]);
+  rows.push(["Perfil", CONFIG.PROFILE_VISIBILITY[p.communityvisibilitystate] || "—"]);
+  if (p.gameextrainfo) rows.push(["Jugando", "🎮 " + esc(p.gameextrainfo)]);
 
-    <div class="profile-grid">
-      <div class="profile-avatar-box">
-        <img src="${p.avatarfull || CONFIG.DEFAULT_AVATAR}" alt="Avatar">
-        <div class="profile-main-name">${escHtml(p.personaname)}</div>
-        <div style="margin-bottom:8px">
-          <span class="sidebar-state" style="background:${stateInfo.color}; color:#000; font-size:.75rem; padding:2px 10px; border-radius:999px; display:inline-block">
-            ${stateInfo.label}
-          </span>
-        </div>
-        <a class="profile-link" href="${p.profileurl}" target="_blank" rel="noopener">
-          Ver en Steam ↗
-        </a>
-      </div>
+  if (rows.length) {
+    meta.innerHTML = rows.map(([k, v]) =>
+      `<div class="lp-meta-row"><span class="lp-meta-key">${k}</span><span class="lp-meta-val">${v}</span></div>`
+    ).join("");
+    meta.classList.remove("hidden");
+  }
 
-      <div class="profile-info-box">
-        ${p.realname ? `
-        <div class="info-row">
-          <span class="info-label">Nombre real</span>
-          <span class="info-value">${escHtml(p.realname)}</span>
-        </div>` : ""}
-
-        <div class="info-row">
-          <span class="info-label">SteamID64</span>
-          <span class="info-value" style="font-family:monospace;font-size:.8rem">${p.steamid}</span>
-        </div>
-
-        <div class="info-row">
-          <span class="info-label">Estado</span>
-          <span class="info-value">
-            <span class="status-dot" style="background:${stateInfo.color}"></span>
-            ${stateInfo.label}
-          </span>
-        </div>
-
-        <div class="info-row">
-          <span class="info-label">Visibilidad</span>
-          <span class="info-value">${visibility}</span>
-        </div>
-
-        ${p.loccountrycode ? `
-        <div class="info-row">
-          <span class="info-label">País</span>
-          <span class="info-value">📍 ${p.loccountrycode}</span>
-        </div>` : ""}
-
-        ${p.timecreated ? `
-        <div class="info-row">
-          <span class="info-label">Cuenta creada</span>
-          <span class="info-value">${formatDate(p.timecreated)}</span>
-        </div>` : ""}
-
-        ${p.lastlogoff ? `
-        <div class="info-row">
-          <span class="info-label">Último acceso</span>
-          <span class="info-value">${formatDate(p.lastlogoff)}</span>
-        </div>` : ""}
-
-        ${p.gameextrainfo ? `
-        <div class="info-row full">
-          <span class="info-label">Jugando ahora</span>
-          <span class="info-value">🎮 ${escHtml(p.gameextrainfo)}</span>
-        </div>` : ""}
-
-        <div class="info-row full">
-          <span class="info-label">Baneos</span>
-          <span class="info-value">${banHtml || "Cargando…"}</span>
-        </div>
-      </div>
-    </div>
-
-    ${STATE.recentGames.length ? `
-    <div class="section-header" style="margin-top:8px">
-      <h2>Actividad reciente</h2>
-      <span class="section-count">${STATE.recentGames.length} juegos</span>
-    </div>
-    <div class="recent-grid">
-      ${STATE.recentGames.map(g => `
-        <div class="game-card">
-          <img class="game-card-img"
-               src="${gameImgUrl(g.appid, g.img_icon_url)}"
-               onerror="this.src='${CONFIG.DEFAULT_GAME_IMG}'"
-               alt="${escHtml(g.name)}">
-          <div class="game-card-body">
-            <div class="game-card-name" title="${escHtml(g.name)}">${escHtml(g.name)}</div>
-            <div class="game-card-meta">
-              <span class="game-hours">${formatHours(g.playtime_2weeks)} ult. 2 sem.</span>
-              <span>${formatHours(g.playtime_forever)} total</span>
-            </div>
-          </div>
-        </div>
-      `).join("")}
-    </div>
-    ` : `<div class="empty-state"><div class="empty-icon">🎮</div><p>${CONFIG.ERRORS.NO_RECENT}</p></div>`}
-  `;
+  const link = document.getElementById("lp-link");
+  link.href = p.profileurl;
+  link.classList.remove("hidden");
 }
 
-/** Renderiza la vista de Juegos (librería). */
-function renderGames() {
-  const container = document.getElementById("view-games");
-  let games = [...STATE.ownedGames];
+/* ═══════════════════════════════════════
+   RENDER: ACTIVIDAD RECIENTE
+   ═══════════════════════════════════════ */
+function renderRecent() {
+  setTitle("Actividad reciente", STATE.recentGames.length ? STATE.recentGames.length + " juegos" : "");
+  const el = document.getElementById("view-recent");
 
-  if (!games.length) {
-    container.innerHTML = `
-      <div class="section-header"><h2>Juegos</h2></div>
-      <div class="empty-state"><div class="empty-icon">📦</div><p>${CONFIG.ERRORS.NO_GAMES}</p></div>
-    `;
+  if (!STATE.recentGames.length) {
+    el.innerHTML = `<div class="empty-view"><div class="ev-icon">🎮</div><p>${CONFIG.ERRORS.NO_RECENT}</p></div>`;
     return;
   }
 
-  // Filtrar por búsqueda
+  el.innerHTML = `<div class="recent-grid">
+    ${STATE.recentGames.map(g => `
+      <div class="game-card">
+        <img class="game-card-img" src="${gameImg(g.appid, g.img_icon_url)}" onerror="this.src='${CONFIG.DEFAULT_GAME_IMG}'" alt="">
+        <div class="game-card-body">
+          <div class="game-card-name" title="${esc(g.name)}">${esc(g.name)}</div>
+          <div class="game-card-meta">
+            <span class="game-hours">${fmtHours(g.playtime_2weeks)} (2 sem.)</span>
+            <span>${fmtHours(g.playtime_forever)} total</span>
+          </div>
+        </div>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
+/* ═══════════════════════════════════════
+   RENDER: JUEGOS (LIBRERÍA)
+   ═══════════════════════════════════════ */
+function renderGames() {
+  setTitle("Juegos", "");
+  const wrap = document.getElementById("games-inner");
+
+  let games = [...STATE.ownedGames];
+  if (!games.length) {
+    wrap.innerHTML = `<div class="empty-view"><div class="ev-icon">📦</div><p>${CONFIG.ERRORS.NO_GAMES}</p></div>`;
+    return;
+  }
+
   const q = STATE.gamesFilter.toLowerCase();
   if (q) games = games.filter(g => g.name?.toLowerCase().includes(q));
 
-  // Ordenar
-  if (STATE.gamesSort === "hours")      games.sort((a, b) => (b.playtime_forever || 0) - (a.playtime_forever || 0));
-  else if (STATE.gamesSort === "name")  games.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  else if (STATE.gamesSort === "recent") games.sort((a, b) => (b.rtime_last_played || 0) - (a.rtime_last_played || 0));
+  if      (STATE.gamesSort === "hours")  games.sort((a,b) => (b.playtime_forever||0) - (a.playtime_forever||0));
+  else if (STATE.gamesSort === "name")   games.sort((a,b) => (a.name||"").localeCompare(b.name||""));
+  else if (STATE.gamesSort === "recent") games.sort((a,b) => (b.rtime_last_played||0) - (a.rtime_last_played||0));
 
-  const maxHours = Math.max(...games.map(g => g.playtime_forever || 0), 1);
+  const maxH  = Math.max(...games.map(g => g.playtime_forever||0), 1);
   const total = games.length;
-  const perPage = CONFIG.GAMES_PER_PAGE;
-  const totalPages = Math.ceil(total / perPage);
-  const page = Math.min(STATE.gamesPage, totalPages);
-  const slice = games.slice((page - 1) * perPage, page * perPage);
+  const pp    = CONFIG.GAMES_PER_PAGE;
+  const totalPages = Math.ceil(total / pp);
+  const page  = Math.min(STATE.gamesPage, totalPages || 1);
+  const slice = games.slice((page-1)*pp, page*pp);
 
-  container.innerHTML = `
-    <div class="section-header">
-      <h2>Juegos</h2>
-      <span class="section-count">${total} juegos</span>
-    </div>
+  setTitle("Juegos", total + " juegos");
 
-    <div class="games-toolbar">
-      <input class="search-input" id="games-search" type="text"
-             placeholder="Buscar juego…" value="${escHtml(STATE.gamesFilter)}">
-      <select class="sort-select" id="games-sort">
-        <option value="hours"  ${STATE.gamesSort==="hours"  ? "selected":""}>Más jugados</option>
-        <option value="name"   ${STATE.gamesSort==="name"   ? "selected":""}>Nombre A-Z</option>
-        <option value="recent" ${STATE.gamesSort==="recent" ? "selected":""}>Más recientes</option>
-      </select>
-    </div>
-
+  wrap.innerHTML = `
     <table class="games-table">
       <thead>
         <tr>
-          <th></th>
-          <th>Juego</th>
-          <th class="hours-bar-cell">Horas jugadas</th>
-          <th>Último uso</th>
+          <th></th><th>Juego</th><th style="width:140px">Horas</th><th>Últ. vez</th>
         </tr>
       </thead>
       <tbody>
         ${slice.map(g => `
-          <tr class="achievement-row-trigger"
-              data-appid="${g.appid}"
-              data-name="${escHtml(g.name || "")}"
-              title="Click para ver logros de ${escHtml(g.name || "")}">
+          <tr data-appid="${g.appid}" data-name="${esc(g.name||"")}">
+            <td><img class="gt-img" src="${gameImg(g.appid, g.img_icon_url)}" onerror="this.style.display='none'" alt=""></td>
+            <td><div class="gt-name" title="${esc(g.name||"")}">${esc(g.name||("AppID "+g.appid))}</div></td>
             <td>
-              <img class="game-row-img"
-                   src="${gameImgUrl(g.appid, g.img_icon_url)}"
-                   onerror="this.src='${CONFIG.DEFAULT_GAME_IMG}'"
-                   alt="">
-            </td>
-            <td>
-              <div class="game-row-name">${escHtml(g.name || `AppID ${g.appid}`)}</div>
-            </td>
-            <td class="hours-bar-cell">
-              <div class="hours-bar-wrap">
-                <div class="hours-bar">
-                  <div class="hours-bar-fill" style="width:${Math.round((g.playtime_forever || 0) / maxHours * 100)}%"></div>
-                </div>
-                <span class="hours-text">${formatHours(g.playtime_forever)}</span>
+              <div class="hbar-wrap">
+                <div class="hbar"><div class="hbar-fill" style="width:${Math.round((g.playtime_forever||0)/maxH*100)}%"></div></div>
+                <span class="hbar-text">${fmtHours(g.playtime_forever)}</span>
               </div>
             </td>
-            <td><span class="hours-text">${formatDateShort(g.rtime_last_played)}</span></td>
+            <td><span class="hbar-text">${fmtDateShort(g.rtime_last_played)}</span></td>
           </tr>
         `).join("")}
       </tbody>
     </table>
-
-    ${totalPages > 1 ? renderPagination(page, totalPages, "games") : ""}
+    ${totalPages > 1 ? makePagination(page, totalPages, "games") : ""}
   `;
 
-  // Eventos de filtro/sort
-  document.getElementById("games-search").addEventListener("input", e => {
-    STATE.gamesFilter = e.target.value;
-    STATE.gamesPage = 1;
-    renderGames();
-  });
-  document.getElementById("games-sort").addEventListener("change", e => {
-    STATE.gamesSort = e.target.value;
-    STATE.gamesPage = 1;
-    renderGames();
-  });
-
-  // Click en fila → ir a logros del juego
-  container.querySelectorAll(".achievement-row-trigger").forEach(row => {
+  // Click en fila → logros
+  wrap.querySelectorAll("tbody tr").forEach(row => {
+    row.style.cursor = "pointer";
     row.addEventListener("click", () => {
       const appId = row.dataset.appid;
       const name  = row.dataset.name;
-      const sel = document.getElementById("ach-game-select");
-      if (sel) {
-        sel.value = appId;
-        switchSection("achievements");
-        // Autocargar si tiene horas
-        const game = STATE.ownedGames.find(g => String(g.appid) === appId);
-        if (game && game.playtime_forever > 0) {
-          loadAchievements(appId, name);
-        }
-      } else {
-        switchSection("achievements");
-      }
+      const sel   = document.getElementById("ach-select");
+      if (sel && sel.querySelector(`option[value="${appId}"]`)) sel.value = appId;
+      switchSection("achievements");
+      const game = STATE.ownedGames.find(g => String(g.appid) === appId);
+      if (game && game.playtime_forever > 0) loadAchievements(appId, name);
     });
   });
 
-  // Paginación
-  container.querySelectorAll(".page-btn[data-page]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      STATE.gamesPage = Number(btn.dataset.page);
-      renderGames();
-      document.getElementById("main-content").scrollTop = 0;
-    });
-  });
+  bindPagination(wrap, "games");
 }
 
-/** Renderiza la vista de Logros. */
+/* ═══════════════════════════════════════
+   RENDER: LOGROS
+   ═══════════════════════════════════════ */
 function renderAchievements() {
-  const container = document.getElementById("view-achievements");
+  setTitle("Logros", "");
+  const sel = document.getElementById("ach-select");
   const gamesWithHours = STATE.ownedGames
     .filter(g => g.playtime_forever > 0)
-    .sort((a, b) => b.playtime_forever - a.playtime_forever);
+    .sort((a,b) => b.playtime_forever - a.playtime_forever);
 
-  container.innerHTML = `
-    <div class="section-header">
-      <h2>Logros</h2>
-    </div>
+  sel.innerHTML = `<option value="">— Elegí un juego —</option>` +
+    gamesWithHours.map(g => `<option value="${g.appid}">${esc(g.name||"AppID "+g.appid)}</option>`).join("");
 
-    <div class="achievements-select-area">
-      <label for="ach-game-select">Seleccionar juego:</label>
-      <select class="game-select" id="ach-game-select">
-        <option value="">— Elegí un juego —</option>
-        ${gamesWithHours.map(g => `
-          <option value="${g.appid}">${escHtml(g.name || `AppID ${g.appid}`)}</option>
-        `).join("")}
-      </select>
-      <button class="btn-load-ach" id="btn-load-ach">Cargar logros</button>
-    </div>
+  document.getElementById("ach-inner").innerHTML = "";
 
-    <div id="ach-content"></div>
-  `;
-
-  document.getElementById("btn-load-ach").addEventListener("click", () => {
-    const sel = document.getElementById("ach-game-select");
-    const appId = sel.value;
-    if (!appId) { showToast("Seleccioná un juego primero.", "error"); return; }
-    const name = sel.options[sel.selectedIndex].text;
-    loadAchievements(appId, name);
-  });
+  if (!STATE.achievements.length) return;
+  renderAchievementsContent();
 }
 
-/** Carga y muestra los logros de un juego. */
 async function loadAchievements(appId, gameName) {
-  const container = document.getElementById("ach-content");
-  container.innerHTML = `<div class="spinner" style="margin:40px auto"></div>`;
+  setTitle("Logros — " + gameName, "");
+  const inner = document.getElementById("ach-inner");
+  inner.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;padding:40px;gap:12px"><div class="spinner"></div><span>Cargando logros…</span></div>`;
   try {
-    const achs = await fetchAchievements(STATE.steamId, appId);
-    STATE.achievements = achs;
-    STATE.achFilter = "all";
-    renderAchievementsContent(gameName);
-  } catch (e) {
-    container.innerHTML = `<div class="error-msg">⚠️ ${e.message}</div>`;
+    STATE.achievements = await fetchAchievements(STATE.steamId, appId);
+    STATE.achGameName  = gameName;
+    STATE.achFilter    = "all";
+    renderAchievementsContent();
+  } catch(e) {
+    inner.innerHTML = `<div class="msg-error">⚠️ ${esc(e.message)}</div>`;
   }
 }
 
-/** Renderiza el contenido de logros (filtros + lista). */
-function renderAchievementsContent(gameName) {
-  const achs = STATE.achievements;
+function renderAchievementsContent() {
+  const achs    = STATE.achievements;
   const unlocked = achs.filter(a => a.achieved === 1);
-  const locked    = achs.filter(a => a.achieved === 0);
-  const pct = achs.length ? Math.round(unlocked.length / achs.length * 100) : 0;
-  const container = document.getElementById("ach-content");
-
-  let filtered = achs;
+  const locked   = achs.filter(a => a.achieved === 0);
+  const pct      = achs.length ? Math.round(unlocked.length / achs.length * 100) : 0;
+  let filtered   = achs;
   if (STATE.achFilter === "unlocked") filtered = unlocked;
   if (STATE.achFilter === "locked")   filtered = locked;
 
-  container.innerHTML = `
-    <div class="section-header" style="margin-top:0">
-      <h2 style="font-size:1.1rem">${escHtml(gameName)}</h2>
-    </div>
+  setTitle("Logros — " + (STATE.achGameName || ""), `${unlocked.length}/${achs.length}`);
 
+  const inner = document.getElementById("ach-inner");
+  inner.innerHTML = `
     <div class="ach-summary">
-      <div class="ach-stat">
-        <div class="ach-stat-value">${unlocked.length}</div>
-        <div class="ach-stat-label">Obtenidos</div>
-      </div>
-      <div class="ach-stat">
-        <div class="ach-stat-value">${achs.length}</div>
-        <div class="ach-stat-label">Total</div>
-      </div>
-      <div class="ach-stat">
-        <div class="ach-stat-value" style="color:var(--accent-green)">${pct}%</div>
-        <div class="ach-stat-label">Completado</div>
-      </div>
-      <div class="ach-progress-wrap">
-        <div class="ach-progress-bar">
-          <div class="ach-progress-fill" style="width:${pct}%"></div>
-        </div>
-        <span style="font-size:.75rem;color:var(--text-secondary)">${unlocked.length} de ${achs.length} logros obtenidos</span>
+      <div class="ach-stat"><div class="ach-stat-val">${unlocked.length}</div><div class="ach-stat-label">Obtenidos</div></div>
+      <div class="ach-stat"><div class="ach-stat-val">${achs.length}</div><div class="ach-stat-label">Total</div></div>
+      <div class="ach-stat"><div class="ach-stat-val" style="color:var(--accent-green)">${pct}%</div><div class="ach-stat-label">Completado</div></div>
+      <div class="ach-prog-wrap">
+        <div class="ach-prog-bar"><div class="ach-prog-fill" style="width:${pct}%"></div></div>
+        <span style="font-size:.72rem;color:var(--text-secondary)">${unlocked.length} de ${achs.length} logros obtenidos</span>
       </div>
     </div>
-
-    <div class="achievements-filter">
-      <button class="filter-btn ${STATE.achFilter==="all"      ? "active":""}" data-f="all">Todos (${achs.length})</button>
-      <button class="filter-btn ${STATE.achFilter==="unlocked" ? "active":""}" data-f="unlocked">Obtenidos (${unlocked.length})</button>
-      <button class="filter-btn ${STATE.achFilter==="locked"   ? "active":""}" data-f="locked">Faltantes (${locked.length})</button>
+    <div class="ach-filters">
+      <button class="ach-filter-btn ${STATE.achFilter==="all"?"active":""}"      data-f="all">Todos (${achs.length})</button>
+      <button class="ach-filter-btn ${STATE.achFilter==="unlocked"?"active":""}" data-f="unlocked">Obtenidos (${unlocked.length})</button>
+      <button class="ach-filter-btn ${STATE.achFilter==="locked"?"active":""}"   data-f="locked">Faltantes (${locked.length})</button>
     </div>
-
-    <div class="achievements-list">
+    <div class="ach-list">
       ${filtered.map(a => `
-        <div class="achievement-item ${a.achieved ? "unlocked" : "locked"}">
-          <img class="ach-icon"
-               src="${a.achieved ? (a.icon || "") : (a.icongray || a.icon || "")}"
-               onerror="this.style.display='none'"
-               alt="">
+        <div class="ach-item ${a.achieved?"unlocked":"locked"}">
+          <img class="ach-ico" src="${a.achieved?(a.icon||""):(a.icongray||a.icon||"")}" onerror="this.style.display='none'" alt="">
           <div class="ach-info">
-            <div class="ach-name">${escHtml(a.displayName || a.apiname)}</div>
-            ${a.description ? `<div class="ach-desc">${escHtml(a.description)}</div>` : ""}
-            ${a.achieved && a.unlocktime
-              ? `<div class="ach-unlock-time">Obtenido: ${formatDate(a.unlocktime)}</div>`
-              : ""}
+            <div class="ach-name">${esc(a.displayName||a.apiname)}</div>
+            ${a.description?`<div class="ach-desc">${esc(a.description)}</div>`:""}
+            ${a.achieved&&a.unlocktime?`<div class="ach-date">Obtenido: ${fmtDate(a.unlocktime)}</div>`:""}
           </div>
-          <span class="ach-check">${a.achieved ? "✅" : "🔒"}</span>
+          <span class="ach-chk">${a.achieved?"✅":"🔒"}</span>
         </div>
       `).join("")}
     </div>
   `;
 
-  // Filtros
-  container.querySelectorAll(".filter-btn[data-f]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      STATE.achFilter = btn.dataset.f;
-      renderAchievementsContent(gameName);
-    });
+  inner.querySelectorAll(".ach-filter-btn[data-f]").forEach(btn => {
+    btn.addEventListener("click", () => { STATE.achFilter = btn.dataset.f; renderAchievementsContent(); });
   });
 }
 
-/** Renderiza la vista de Amigos. */
+/* ═══════════════════════════════════════
+   RENDER: AMIGOS
+   ═══════════════════════════════════════ */
 async function renderFriends() {
-  const container = document.getElementById("view-friends");
-  container.innerHTML = `<div class="section-header"><h2>Amigos</h2></div><div class="spinner" style="margin:40px auto"></div>`;
+  setTitle("Amigos", "");
+  const el = document.getElementById("view-friends");
 
   if (!STATE.friends.length) {
-    container.innerHTML = `
-      <div class="section-header"><h2>Amigos</h2></div>
-      <div class="empty-state"><div class="empty-icon">👥</div><p>${CONFIG.ERRORS.NO_FRIENDS}</p></div>
-    `;
+    el.innerHTML = `<div class="empty-view"><div class="ev-icon">👥</div><p>${CONFIG.ERRORS.NO_FRIENDS}</p></div>`;
     return;
   }
 
-  const page = STATE.friendsPage;
-  const perPage = CONFIG.FRIENDS_PER_PAGE;
-  const totalPages = Math.ceil(STATE.friends.length / perPage);
-  const slice = STATE.friends.slice((page - 1) * perPage, page * perPage);
+  const pp = CONFIG.FRIENDS_PER_PAGE;
+  const totalPages = Math.ceil(STATE.friends.length / pp);
+  const page = Math.min(STATE.friendsPage, totalPages || 1);
+  const slice = STATE.friends.slice((page-1)*pp, page*pp);
   const ids = slice.map(f => f.steamid);
 
+  setTitle("Amigos", STATE.friends.length + " amigos");
+
+  el.innerHTML = `<div class="spinner" style="display:block;margin:40px auto"></div>`;
+
   let summaries = [];
-  try {
-    summaries = await fetchFriendsSummaries(ids);
-  } catch (e) {
-    summaries = [];
-  }
+  try { summaries = await fetchFriendsSummaries(ids); } catch { summaries = []; }
+  const smap = Object.fromEntries(summaries.map(s => [s.steamid, s]));
 
-  const summaryMap = Object.fromEntries(summaries.map(s => [s.steamid, s]));
-
-  container.innerHTML = `
-    <div class="section-header">
-      <h2>Amigos</h2>
-      <span class="section-count">${STATE.friends.length} amigos</span>
-    </div>
-
+  el.innerHTML = `
     <div class="friends-grid">
       ${slice.map(f => {
-        const s = summaryMap[f.steamid] || {};
-        const stateInfo = CONFIG.PLAYER_STATES[s.personastate] || CONFIG.PLAYER_STATES[0];
+        const s  = smap[f.steamid] || {};
+        const si = stateInfo(s.personastate);
         return `
-          <a class="friend-card"
-             href="${s.profileurl || `https://steamcommunity.com/profiles/${f.steamid}`}"
-             target="_blank" rel="noopener">
-            <div class="friend-avatar">
-              <img src="${s.avatarmedium || CONFIG.DEFAULT_AVATAR}"
-                   alt="${escHtml(s.personaname || "Amigo")}"
-                   loading="lazy"
-                   onerror="this.src='${CONFIG.DEFAULT_AVATAR}'">
-              <span class="status-dot" style="background:${stateInfo.color}" title="${stateInfo.label}"></span>
+          <a class="friend-card" href="${s.profileurl||"https://steamcommunity.com/profiles/"+f.steamid}" target="_blank" rel="noopener">
+            <div class="friend-av">
+              <img src="${s.avatarmedium||CONFIG.DEFAULT_AVATAR}" onerror="this.src='${CONFIG.DEFAULT_AVATAR}'" alt="" loading="lazy">
+              <span class="friend-dot" style="background:${si.color}"></span>
             </div>
-            <div class="friend-info">
-              <div class="friend-name">${escHtml(s.personaname || f.steamid)}</div>
-              <div class="friend-status">${stateInfo.label}</div>
-              <div class="friend-since">Amigos desde ${formatDateShort(f.friend_since)}</div>
+            <div>
+              <div class="friend-name">${esc(s.personaname||f.steamid)}</div>
+              <div class="friend-state">${si.label}</div>
+              <div class="friend-since">Desde ${fmtDateShort(f.friend_since)}</div>
             </div>
           </a>
         `;
       }).join("")}
     </div>
-
-    ${totalPages > 1 ? renderPagination(page, totalPages, "friends") : ""}
+    ${totalPages > 1 ? makePagination(page, totalPages, "friends") : ""}
   `;
 
-  // Paginación
-  container.querySelectorAll(".page-btn[data-page]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      STATE.friendsPage = Number(btn.dataset.page);
-      renderFriends();
-    });
-  });
+  bindPagination(el, "friends");
 }
 
-/** Renderiza la vista de Baneos. */
+/* ═══════════════════════════════════════
+   RENDER: BANEOS
+   ═══════════════════════════════════════ */
 function renderBans() {
-  const container = document.getElementById("view-bans");
-  const b = STATE.banInfo;
+  setTitle("Baneos", "");
+  const el = document.getElementById("view-bans");
+  const b  = STATE.banInfo;
 
   if (!b) {
-    container.innerHTML = `
-      <div class="section-header"><h2>Baneos</h2></div>
-      <div class="empty-state"><div class="empty-icon">🛡️</div><p>No se pudo obtener información de baneos.</p></div>
-    `;
+    el.innerHTML = `<div class="empty-view"><div class="ev-icon">🛡️</div><p>No se pudo obtener información de baneos.</p></div>`;
     return;
   }
 
   const hasBan = b.VACBanned || b.CommunityBanned || b.EconomyBan !== "none";
-  const overallColor = hasBan ? "var(--accent-red)" : "var(--accent-green)";
-  const overallIcon  = hasBan ? "⚠️" : "✅";
 
-  container.innerHTML = `
-    <div class="section-header">
-      <h2>Baneos</h2>
-    </div>
-
+  el.innerHTML = `
     <div class="bans-grid">
       <div class="ban-card">
-        <div class="ban-card-title" style="color:${overallColor}">
-          ${overallIcon} Estado general
+        <div class="ban-card-title" style="color:${hasBan?"var(--accent-red)":"var(--accent-green)"}">
+          ${hasBan?"⚠️":"✅"} Estado general
         </div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Resumen</span>
+        <div class="ban-row">
+          <span class="ban-key">Resumen</span>
           <span>${hasBan
-            ? `<span class="ban-badge">Tiene restricciones</span>`
-            : `<span class="clean-badge">Perfil limpio</span>`
+            ? `<span class="badge-ban">Restricciones activas</span>`
+            : `<span class="badge-clean">Perfil limpio</span>`
           }</span>
         </div>
       </div>
-
       <div class="ban-card">
-        <div class="ban-card-title">🔫 VAC (Anti-Cheat)</div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Baneado por VAC</span>
-          <span style="color:${b.VACBanned ? "var(--accent-red)":"var(--accent-green)"}">
-            ${b.VACBanned ? "Sí ⚠️" : "No ✅"}
-          </span>
-        </div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">N° de baneos VAC</span>
-          <span>${b.NumberOfVACBans}</span>
-        </div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Días desde último baneo</span>
-          <span>${b.VACBanned ? `${b.DaysSinceLastBan} días` : "—"}</span>
-        </div>
+        <div class="ban-card-title">🔫 VAC</div>
+        <div class="ban-row"><span class="ban-key">Baneado VAC</span><span style="color:${b.VACBanned?"var(--accent-red)":"var(--accent-green)"}">${b.VACBanned?"Sí ⚠️":"No ✅"}</span></div>
+        <div class="ban-row"><span class="ban-key">N° de baneos</span><span>${b.NumberOfVACBans}</span></div>
+        <div class="ban-row"><span class="ban-key">Días desde ban</span><span>${b.VACBanned?b.DaysSinceLastBan+" días":"—"}</span></div>
       </div>
-
       <div class="ban-card">
-        <div class="ban-card-title">🏘️ Comunidad y Economía</div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Baneo de comunidad</span>
-          <span style="color:${b.CommunityBanned ? "var(--accent-red)":"var(--accent-green)"}">
-            ${b.CommunityBanned ? "Sí ⚠️" : "No ✅"}
-          </span>
-        </div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Baneo de economía</span>
-          <span style="color:${b.EconomyBan !== "none" ? "var(--accent-red)":"var(--accent-green)"}">
-            ${b.EconomyBan !== "none" ? `${b.EconomyBan} ⚠️` : "Ninguno ✅"}
-          </span>
-        </div>
-        <div class="ban-status-item">
-          <span class="ban-status-key">Baneos en juegos</span>
-          <span>${b.NumberOfGameBans}</span>
-        </div>
+        <div class="ban-card-title">🏘️ Comunidad</div>
+        <div class="ban-row"><span class="ban-key">Baneo comunidad</span><span style="color:${b.CommunityBanned?"var(--accent-red)":"var(--accent-green)"}">${b.CommunityBanned?"Sí ⚠️":"No ✅"}</span></div>
+        <div class="ban-row"><span class="ban-key">Baneo economía</span><span style="color:${b.EconomyBan!=="none"?"var(--accent-red)":"var(--accent-green)"}">${b.EconomyBan!=="none"?b.EconomyBan+" ⚠️":"Ninguno ✅"}</span></div>
+        <div class="ban-row"><span class="ban-key">Baneos en juegos</span><span>${b.NumberOfGameBans}</span></div>
       </div>
     </div>
   `;
 }
 
-/** Genera HTML de paginación. */
-function renderPagination(current, total, ns) {
-  const pages = [];
-  const delta = 2;
-  for (let i = 1; i <= total; i++) {
-    if (i === 1 || i === total || Math.abs(i - current) <= delta) {
-      pages.push(i);
-    } else if (pages[pages.length - 1] !== "…") {
-      pages.push("…");
-    }
-  }
+/* ═══════════════════════════════════════
+   NAVEGACIÓN
+   ═══════════════════════════════════════ */
+const SECTION_TITLES = {
+  recent:       "Actividad reciente",
+  games:        "Juegos",
+  achievements: "Logros",
+  friends:      "Amigos",
+  bans:         "Baneos",
+  videos:       "Videos",
+  screenshots:  "Capturas",
+};
 
-  return `<div class="pagination">
-    <button class="page-btn" data-page="${current - 1}" ${current <= 1 ? "disabled" : ""}>‹ Ant.</button>
-    ${pages.map(p => p === "…"
-      ? `<span style="color:var(--text-muted);padding:0 4px">…</span>`
-      : `<button class="page-btn ${p === current ? "active" : ""}" data-page="${p}">${p}</button>`
-    ).join("")}
-    <button class="page-btn" data-page="${current + 1}" ${current >= total ? "disabled" : ""}>Sig. ›</button>
-  </div>`;
+function setTitle(title, badge) {
+  document.getElementById("section-title").textContent = title;
+  const b = document.getElementById("section-badge");
+  if (badge) { b.textContent = badge; b.classList.remove("hidden"); }
+  else b.classList.add("hidden");
 }
 
-/* ═══════════════════════════════════════════════
-   NAVEGACIÓN / SECCIONES
-   ═══════════════════════════════════════════════ */
-
-/** Cambia la sección activa del menú y renderiza el contenido correspondiente. */
 function switchSection(section) {
+  if (!STATE.playerData && section !== "recent") {
+    toast("Buscá un perfil primero.", "error"); return;
+  }
+
   STATE.activeSection = section;
 
-  // Actualizar clases del menú
-  document.querySelectorAll(".nav-item").forEach(item => {
-    item.classList.toggle("active", item.dataset.section === section);
+  // Actualizar menú derecho
+  document.querySelectorAll(".rn-item").forEach(i => {
+    i.classList.toggle("active", i.dataset.section === section);
   });
 
-  // Ocultar todas las vistas
-  document.querySelectorAll(".section-view").forEach(v => v.classList.remove("active"));
+  // Ocultar el estado vacío inicial
+  document.getElementById("content-empty").style.display   = "none";
+  document.getElementById("content-loading").classList.add("hidden");
 
-  // Mostrar la vista activa
-  const view = document.getElementById(`view-${section}`);
-  if (view) view.classList.add("active");
+  // Ocultar todas las vistas, mostrar la activa
+  document.querySelectorAll(".c-view").forEach(v => v.classList.add("hidden"));
+  const activeView = document.getElementById("view-" + section);
+  if (activeView) activeView.classList.remove("hidden");
 
   // Renderizar según sección
-  if (section === "profile")      renderProfile();
+  setTitle(SECTION_TITLES[section] || section, "");
+
+  if (section === "recent")       renderRecent();
   if (section === "games")        renderGames();
   if (section === "achievements") renderAchievements();
   if (section === "friends")      renderFriends();
   if (section === "bans")         renderBans();
-
-  // En mobile, cerrar sidebar
-  document.getElementById("sidebar").classList.remove("open");
-  document.getElementById("sidebar-overlay").classList.remove("visible");
 }
 
-/* ═══════════════════════════════════════════════
+/* ═══════════════════════════════════════
    BÚSQUEDA PRINCIPAL
-   ═══════════════════════════════════════════════ */
-
-/** Función principal: busca y carga todos los datos del perfil. */
+   ═══════════════════════════════════════ */
 async function searchProfile() {
   const rawInput = document.getElementById("input-steamid").value.trim();
   const apiKey   = document.getElementById("input-apikey").value.trim();
 
-  if (!apiKey)   { showToast(CONFIG.ERRORS.NO_API_KEY,  "error"); return; }
-  if (!rawInput) { showToast(CONFIG.ERRORS.NO_STEAM_ID, "error"); return; }
+  if (!apiKey)   { toast(CONFIG.ERRORS.NO_API_KEY,  "error"); return; }
+  if (!rawInput) { toast(CONFIG.ERRORS.NO_STEAM_ID, "error"); return; }
 
   STATE.apiKey = apiKey;
-
-  // Guardar en localStorage para próxima sesión
   localStorage.setItem(CONFIG.LS_KEYS.API_KEY,  apiKey);
 
-  showLoading(true);
-  hideWelcome();
+  // Mostrar loading
+  document.getElementById("content-empty").style.display = "none";
+  document.querySelectorAll(".c-view").forEach(v => v.classList.add("hidden"));
+  document.getElementById("content-loading").classList.remove("hidden");
 
   try {
-    // 1. Resolver SteamID
     const steamId = await resolveSteamId(rawInput);
     STATE.steamId = steamId;
     localStorage.setItem(CONFIG.LS_KEYS.STEAM_ID, rawInput);
 
-    // 2. Obtener datos en paralelo (para velocidad)
     const [player, owned, recent, bans] = await Promise.all([
       fetchPlayerSummary(steamId),
       fetchOwnedGames(steamId).catch(() => []),
@@ -905,33 +644,29 @@ async function searchProfile() {
     STATE.friends     = [];
     STATE.achievements = [];
 
-    // 3. Cargar amigos (puede fallar si perfil privado)
-    try {
-      STATE.friends = await fetchFriends(steamId);
-    } catch { STATE.friends = []; }
+    try { STATE.friends = await fetchFriends(steamId); } catch { STATE.friends = []; }
 
-    // 4. Renderizar sidebar y sección por defecto
-    renderSidebarProfile(player);
-    updateNavBadges();
-    showNavItems(true);
-    switchSection("profile");
+    // Renderizar panel izquierdo
+    renderLeftPanel(player);
 
-    showToast(`Perfil cargado: ${player.personaname}`, "success");
+    // Ocultar loading, mostrar sección default
+    document.getElementById("content-loading").classList.add("hidden");
+    switchSection("recent");
 
-  } catch (err) {
-    showToast(err.message || CONFIG.ERRORS.API_ERROR, "error");
-    showWelcome();
-  } finally {
-    showLoading(false);
+    toast("Perfil cargado: " + player.personaname, "success");
+
+  } catch(err) {
+    document.getElementById("content-loading").classList.add("hidden");
+    document.getElementById("content-empty").style.display = "flex";
+    toast(err.message || CONFIG.ERRORS.API_ERROR, "error");
   }
 }
 
-/* ═══════════════════════════════════════════════
-   EXPORTAR PERFIL A JSON
-   ═══════════════════════════════════════════════ */
-function exportProfileJSON() {
-  if (!STATE.playerData) { showToast("Buscá un perfil primero.", "error"); return; }
-
+/* ═══════════════════════════════════════
+   EXPORTAR JSON
+   ═══════════════════════════════════════ */
+function exportJSON() {
+  if (!STATE.playerData) { toast("Buscá un perfil primero.", "error"); return; }
   const data = {
     exportedAt:  new Date().toISOString(),
     player:      STATE.playerData,
@@ -940,122 +675,69 @@ function exportProfileJSON() {
     recentGames: STATE.recentGames,
     friends:     STATE.friends,
   };
-
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
-  a.href     = url;
-  a.download = `steaminfo_${STATE.playerData.personaname}_${Date.now()}.json`;
+  const a    = Object.assign(document.createElement("a"), { href: url, download: "steaminfo_" + STATE.playerData.personaname + ".json" });
   a.click();
   URL.revokeObjectURL(url);
-  showToast("Datos exportados exitosamente.", "success");
+  toast("Datos exportados.", "success");
 }
 
-/* ═══════════════════════════════════════════════
-   UI HELPERS
-   ═══════════════════════════════════════════════ */
-
-/** Escapa HTML para prevenir XSS. */
-function escHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+/* ═══════════════════════════════════════
+   TOASTS
+   ═══════════════════════════════════════ */
+function toast(msg, type = "info") {
+  const c = document.getElementById("toast-container");
+  const t = document.createElement("div");
+  t.className = "toast " + type;
+  t.innerHTML = (type==="success"?"✅":type==="error"?"⚠️":"ℹ️") + " " + esc(msg);
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = "0"; setTimeout(() => t.remove(), 300); }, 4000);
 }
 
-/** Muestra u oculta el indicador de carga. */
-function showLoading(visible) {
-  document.getElementById("loading-overlay").classList.toggle("visible", visible);
-}
-
-/** Muestra la pantalla de bienvenida. */
-function showWelcome() {
-  document.getElementById("welcome-screen").style.display = "flex";
-  document.querySelectorAll(".section-view").forEach(v => v.classList.remove("active"));
-  showNavItems(false);
-}
-
-/** Oculta la pantalla de bienvenida. */
-function hideWelcome() {
-  document.getElementById("welcome-screen").style.display = "none";
-}
-
-/** Muestra u oculta los ítems de nav que requieren datos. */
-function showNavItems(visible) {
-  document.querySelectorAll(".nav-item[data-section]").forEach(item => {
-    item.style.opacity = visible ? "1" : ".35";
-    item.style.pointerEvents = visible ? "auto" : "none";
-  });
-}
-
-/** Muestra una notificación toast. */
-function showToast(msg, type = "info") {
-  const container = document.getElementById("toast-container");
-  const toast = document.createElement("div");
-  toast.className = `toast ${type}`;
-  toast.innerHTML = `${type === "success" ? "✅" : type === "error" ? "⚠️" : "ℹ️"} ${escHtml(msg)}`;
-  container.appendChild(toast);
-  setTimeout(() => {
-    toast.style.opacity = "0";
-    toast.style.transition = "opacity .3s";
-    setTimeout(() => toast.remove(), 300);
-  }, 4000);
-}
-
-/* ═══════════════════════════════════════════════
+/* ═══════════════════════════════════════
    INICIALIZACIÓN
-   ═══════════════════════════════════════════════ */
+   ═══════════════════════════════════════ */
 document.addEventListener("DOMContentLoaded", () => {
   // Precargar desde localStorage
   const savedKey = localStorage.getItem(CONFIG.LS_KEYS.API_KEY);
   const savedId  = localStorage.getItem(CONFIG.LS_KEYS.STEAM_ID);
-  if (savedKey) document.getElementById("input-apikey").value   = savedKey;
-  if (savedId)  document.getElementById("input-steamid").value  = savedId;
+  if (savedKey) document.getElementById("input-apikey").value  = savedKey;
+  if (savedId)  document.getElementById("input-steamid").value = savedId;
 
-  // Botón buscar
+  // Botón buscar + Enter
   document.getElementById("btn-search").addEventListener("click", searchProfile);
-
-  // Enter en inputs
-  ["input-steamid", "input-apikey"].forEach(id => {
-    document.getElementById(id).addEventListener("keydown", e => {
-      if (e.key === "Enter") searchProfile();
-    });
+  ["input-steamid","input-apikey"].forEach(id => {
+    document.getElementById(id).addEventListener("keydown", e => { if (e.key==="Enter") searchProfile(); });
   });
 
-  // Navegación sidebar
-  document.querySelectorAll(".nav-item[data-section]").forEach(item => {
-    item.addEventListener("click", () => {
-      if (!STATE.playerData) { showToast("Buscá un perfil primero.", "error"); return; }
-      switchSection(item.dataset.section);
-    });
+  // Menú derecho
+  document.querySelectorAll(".rn-item").forEach(item => {
+    item.addEventListener("click", () => switchSection(item.dataset.section));
   });
 
-  // Botón limpiar caché
-  document.getElementById("btn-clear-cache").addEventListener("click", () => {
-    Cache.clearAll();
+  // Filtros de juegos (toolbar del view-games)
+  document.getElementById("games-search").addEventListener("input", e => {
+    STATE.gamesFilter = e.target.value;
+    STATE.gamesPage   = 1;
+    if (STATE.activeSection === "games") renderGames();
+  });
+  document.getElementById("games-sort").addEventListener("change", e => {
+    STATE.gamesSort = e.target.value;
+    STATE.gamesPage = 1;
+    if (STATE.activeSection === "games") renderGames();
   });
 
-  // Botón exportar JSON
-  document.getElementById("btn-export").addEventListener("click", exportProfileJSON);
-
-  // Menú hamburguesa (mobile)
-  const hamburger = document.getElementById("hamburger");
-  const sidebar   = document.getElementById("sidebar");
-  const overlay   = document.getElementById("sidebar-overlay");
-
-  hamburger.addEventListener("click", () => {
-    sidebar.classList.toggle("open");
-    overlay.classList.toggle("visible");
-  });
-  overlay.addEventListener("click", () => {
-    sidebar.classList.remove("open");
-    overlay.classList.remove("visible");
+  // Cargar logros
+  document.getElementById("btn-load-ach").addEventListener("click", () => {
+    const sel = document.getElementById("ach-select");
+    const appId = sel.value;
+    if (!appId) { toast("Seleccioná un juego primero.", "error"); return; }
+    const name = sel.options[sel.selectedIndex].text;
+    loadAchievements(appId, name);
   });
 
-  // Estado inicial: nav deshabilitado
-  showNavItems(false);
-  showWelcome();
+  // Caché y exportar
+  document.getElementById("btn-clear-cache").addEventListener("click", () => Cache.clearAll());
+  document.getElementById("btn-export").addEventListener("click", exportJSON);
 });

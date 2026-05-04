@@ -1,275 +1,177 @@
 <!DOCTYPE html>
 <!--
-  ╔══════════════════════════════════════════════════════════════╗
-  ║                  SteamInfo — index.html                      ║
-  ║  Visualizador de perfiles públicos de Steam                  ║
-  ║                                                              ║
-  ║  CÓMO OBTENER TU API KEY DE STEAM:                           ║
-  ║  1. Ingresá a https://steamcommunity.com/dev/apikey           ║
-  ║  2. Iniciá sesión con tu cuenta de Steam                     ║
-  ║  3. Ingresá cualquier dominio (ej: localhost)                ║
-  ║  4. Copiá la API Key generada                                ║
-  ║                                                              ║
-  ║  CÓMO OBTENER TU STEAMID64:                                  ║
-  ║  • Desde la URL de tu perfil si es /profiles/XXXXXXXX        ║
-  ║  • Usando https://steamid.io/ con la URL de vanidad          ║
-  ║  • También podés pegar la URL completa del perfil            ║
-  ║                                                              ║
-  ║  NOTA: Los perfiles privados no mostrarán todos los datos.   ║
-  ╚══════════════════════════════════════════════════════════════╝
+  SteamInfo — Estructura fiel a la imagen de referencia:
+  ┌─────────────────────────────────────────────────────────────┐
+  │  HEADER: logo | barra de búsqueda centrada                  │
+  ├──────────────────┬────────────────────────┬─────────────────┤
+  │  PANEL IZQUIERDO │   ÁREA PRINCIPAL        │  MENÚ DERECHO   │
+  │  avatar + nombre │   "Actividad reciente"  │  Actividad rec. │
+  │                  │   [caja de contenido]   │  Juegos         │
+  │                  │                         │  Logros         │
+  │                  │                         │  Amigos         │
+  │                  │                         │  Baneos         │
+  │                  │                         │  Videos         │
+  │                  │                         │  Capturas       │
+  └──────────────────┴────────────────────────┴─────────────────┘
+
+  CÓMO OBTENER TU API KEY:
+  → https://steamcommunity.com/dev/apikey (usá "localhost" como dominio)
+
+  CÓMO OBTENER EL STEAMID64:
+  → Desde la URL de tu perfil, o usando https://steamid.io/
+  → También podés pegar la URL completa del perfil de Steam
 -->
 <html lang="es">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Visualizador de perfiles públicos de Steam. Consultá juegos, logros, amigos y más.">
-  <title>SteamInfo — Visor de perfiles Steam</title>
-
-  <!-- Favicon SVG inline -->
+  <title>SteamInfo</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>">
-
-  <!-- Estilos principales -->
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-  <!-- ╔═══════════════════════════════════════╗
-       ║            HEADER FIJO               ║
-       ╚═══════════════════════════════════════╝ -->
-  <header id="app-header" role="banner">
-
-    <!-- Botón hamburguesa (solo mobile) -->
-    <button id="hamburger" aria-label="Abrir menú" aria-expanded="false" aria-controls="sidebar">
-      <span></span><span></span><span></span>
-    </button>
-
-    <!-- Logo -->
-    <a class="logo" href="#" aria-label="SteamInfo — Inicio">
-      <div class="logo-icon" aria-hidden="true">🎮</div>
-      <span class="logo-text">Steam<span>Info</span></span>
-    </a>
-
-    <!-- Barra de búsqueda -->
-    <div id="search-bar" role="search">
-      <label for="input-steamid" class="sr-only">SteamID64 o URL del perfil</label>
-      <input
-        type="text"
-        id="input-steamid"
-        placeholder="SteamID64 o URL de perfil…"
-        autocomplete="off"
-        spellcheck="false"
-        aria-label="SteamID64 o URL del perfil de Steam"
-        data-tooltip="Ingresá un SteamID64, URL de vanidad o URL completa del perfil"
-      >
-
-      <label for="input-apikey" class="sr-only">API Key de Steam</label>
-      <input
-        type="password"
-        id="input-apikey"
-        placeholder="API Key de Steam…"
-        autocomplete="current-password"
-        spellcheck="false"
-        aria-label="API Key de Steam (obtenela en steamcommunity.com/dev/apikey)"
-        data-tooltip="Obtenela gratis en steamcommunity.com/dev/apikey"
-      >
-
-      <button id="btn-search" type="button" aria-label="Buscar perfil">
-        Buscar
-      </button>
+  <!-- HEADER -->
+  <header id="app-header">
+    <div class="logo">
+      <svg class="logo-icon" width="30" height="30" viewBox="0 0 30 30">
+        <circle cx="15" cy="15" r="14" fill="#1b2838" stroke="#8f98a0" stroke-width="1.5"/>
+        <circle cx="15" cy="15" r="5.5" fill="#8f98a0"/>
+        <line x1="15" y1="1.5" x2="15" y2="5.5"   stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="15" y1="24.5" x2="15" y2="28.5" stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="1.5" y1="15" x2="5.5" y2="15"   stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="24.5" y1="15" x2="28.5" y2="15" stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="4.7" y1="4.7" x2="7.5" y2="7.5"     stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="22.5" y1="22.5" x2="25.3" y2="25.3" stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="4.7" y1="25.3" x2="7.5" y2="22.5"   stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+        <line x1="22.5" y1="7.5" x2="25.3" y2="4.7"   stroke="#8f98a0" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span class="logo-text">STEAMINFO<sup>®</sup></span>
     </div>
 
-    <!-- Acciones del header -->
-    <div class="header-actions" role="toolbar" aria-label="Acciones">
-      <button
-        class="btn-icon"
-        id="btn-clear-cache"
-        type="button"
-        title="Limpia los datos guardados en caché (5 min de vigencia)"
-        aria-label="Limpiar caché"
-      >
-        🗑️ <span>Caché</span>
-      </button>
+    <div id="search-bar">
+      <input type="text"     id="input-steamid" placeholder="SteamID64 o URL del perfil…" autocomplete="off" spellcheck="false">
+      <input type="password" id="input-apikey"  placeholder="API Key de Steam…" autocomplete="off" spellcheck="false">
+      <button id="btn-search" type="button">Buscar</button>
+    </div>
 
-      <button
-        class="btn-icon"
-        id="btn-export"
-        type="button"
-        title="Exporta todos los datos del perfil actual como archivo JSON"
-        aria-label="Exportar datos del perfil a JSON"
-      >
-        📥 <span>Exportar</span>
-      </button>
+    <div class="header-actions">
+      <button class="hdr-btn" id="btn-clear-cache" title="Limpiar caché">🗑</button>
+      <button class="hdr-btn" id="btn-export"      title="Exportar JSON">📥</button>
     </div>
   </header>
 
-  <!-- Overlay para sidebar en mobile -->
-  <div id="sidebar-overlay" aria-hidden="true"></div>
+  <!-- CUERPO: 3 columnas -->
+  <div id="app-body">
 
-  <!-- ╔═══════════════════════════════════════╗
-       ║         LAYOUT PRINCIPAL (Grid)       ║
-       ╚═══════════════════════════════════════╝ -->
-  <div id="app-layout">
-
-    <!-- ┌─────────────────────────────────────┐
-         │              SIDEBAR                │
-         └─────────────────────────────────────┘ -->
-    <aside id="sidebar" role="complementary" aria-label="Panel de perfil y navegación">
-
-      <!-- Perfil resumido (se rellena con JS) -->
-      <div id="sidebar-profile" class="sidebar-profile" aria-live="polite">
-        <!-- Contenido dinámico: avatar, nombre, estado -->
+    <!-- COLUMNA IZQUIERDA -->
+    <aside id="left-panel">
+      <div id="lp-avatar-wrap">
+        <div id="lp-avatar-ring">
+          <!-- Silueta por defecto (igual a la imagen) -->
+          <div id="lp-avatar-placeholder">
+            <svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="40" cy="29" r="18" fill="#2a3f55"/>
+              <ellipse cx="40" cy="68" rx="26" ry="18" fill="#2a3f55"/>
+            </svg>
+          </div>
+          <img id="lp-avatar-img" src="" alt="Avatar" class="hidden">
+          <span id="lp-status-dot" class="lp-status hidden"></span>
+        </div>
       </div>
-
-      <!-- Navegación principal -->
-      <nav class="sidebar-nav" aria-label="Secciones del perfil">
-        <div class="nav-section-label">Perfil</div>
-
-        <!-- Ítem: Resumen del perfil -->
-        <div class="nav-item active" data-section="profile" role="button" tabindex="0"
-             aria-label="Ver resumen del perfil">
-          <span class="nav-icon" aria-hidden="true">👤</span>
-          Resumen
-        </div>
-
-        <!-- Ítem: Juegos poseídos -->
-        <div class="nav-item" data-section="games" role="button" tabindex="0"
-             aria-label="Ver librería de juegos">
-          <span class="nav-icon" aria-hidden="true">🎮</span>
-          Juegos
-          <span class="nav-badge" id="badge-games" aria-label="Cantidad de juegos"></span>
-        </div>
-
-        <div class="nav-section-label">Social</div>
-
-        <!-- Ítem: Lista de amigos -->
-        <div class="nav-item" data-section="friends" role="button" tabindex="0"
-             aria-label="Ver lista de amigos">
-          <span class="nav-icon" aria-hidden="true">👥</span>
-          Amigos
-          <span class="nav-badge" id="badge-friends" aria-label="Cantidad de amigos"></span>
-        </div>
-
-        <div class="nav-section-label">Estadísticas</div>
-
-        <!-- Ítem: Logros -->
-        <div class="nav-item" data-section="achievements" role="button" tabindex="0"
-             aria-label="Ver logros por juego">
-          <span class="nav-icon" aria-hidden="true">🏆</span>
-          Logros
-        </div>
-
-        <!-- Ítem: Baneos -->
-        <div class="nav-item" data-section="bans" role="button" tabindex="0"
-             aria-label="Ver información de baneos">
-          <span class="nav-icon" aria-hidden="true">🛡️</span>
-          Baneos
-        </div>
-      </nav>
-
-      <!-- Footer del sidebar con instrucciones -->
-      <footer class="sidebar-footer">
-        <p>
-          API Key gratuita en<br>
-          <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noopener">
-            steamcommunity.com/dev/apikey
-          </a>
-        </p>
-        <p style="margin-top:6px">
-          SteamID via
-          <a href="https://steamid.io/" target="_blank" rel="noopener">steamid.io</a>
-        </p>
-        <p style="margin-top:8px;font-size:.65rem;line-height:1.5">
-          Caché: 5 min · Datos de la Steam Web API
-        </p>
-      </footer>
+      <div id="lp-name">Name</div>
+      <div id="lp-state" class="lp-state hidden"></div>
+      <div id="lp-country" class="lp-country hidden"></div>
+      <div id="lp-meta" class="lp-meta hidden"></div>
+      <a  id="lp-link" class="lp-link hidden" href="#" target="_blank" rel="noopener">Ver en Steam ↗</a>
     </aside>
 
-    <!-- ┌─────────────────────────────────────┐
-         │           CONTENIDO PRINCIPAL       │
-         └─────────────────────────────────────┘ -->
-    <main id="main-content" role="main" aria-label="Contenido principal">
+    <!-- COLUMNA CENTRAL -->
+    <main id="center-panel">
+      <div id="section-header-row">
+        <span id="section-title">Actividad reciente</span>
+        <span id="section-badge" class="section-badge hidden"></span>
+      </div>
 
-      <!-- Pantalla de bienvenida (visible al inicio) -->
-      <section id="welcome-screen" aria-label="Pantalla de inicio">
-        <div class="welcome-icon" aria-hidden="true">🎮</div>
-        <h1 class="welcome-title">Bienvenido a SteamInfo</h1>
-        <p class="welcome-sub">
-          Buscá cualquier perfil público de Steam ingresando el SteamID64
-          o la URL del perfil junto con tu API Key.
-        </p>
-
-        <div class="welcome-tips" role="complementary" aria-label="Instrucciones de uso">
-          <h4>Cómo empezar</h4>
-          <ul>
-            <li>Obtené tu API Key gratis en <strong>steamcommunity.com/dev/apikey</strong></li>
-            <li>Ingresá el SteamID64 (ej: <code>76561197960287930</code>)</li>
-            <li>O pegá la URL completa del perfil de Steam</li>
-            <li>También funciona con URLs de vanidad (ej: <code>steamcommunity.com/id/gaben</code>)</li>
-            <li>Los perfiles privados mostrarán datos limitados</li>
-          </ul>
+      <div id="content-box">
+        <!-- Estado inicial -->
+        <div id="content-empty">
+          <div class="ce-icon">🎮</div>
+          <p class="ce-text">Ingresá un SteamID y tu API Key para comenzar</p>
+          <div class="ce-tips">
+            <span>→ API Key gratis en <b>steamcommunity.com/dev/apikey</b></span>
+            <span>→ SteamID via <b>steamid.io</b></span>
+            <span>→ Los perfiles privados muestran datos limitados</span>
+          </div>
         </div>
-      </section>
 
-      <!-- ── SECCIÓN: Perfil ── -->
-      <section id="view-profile" class="section-view" aria-label="Resumen del perfil"
-               aria-live="polite">
-        <!-- Contenido dinámico generado por renderProfile() en script.js -->
-      </section>
+        <!-- Loading -->
+        <div id="content-loading" class="hidden">
+          <div class="spinner"></div>
+          <p>Consultando Steam…</p>
+        </div>
 
-      <!-- ── SECCIÓN: Juegos ── -->
-      <section id="view-games" class="section-view" aria-label="Librería de juegos"
-               aria-live="polite">
-        <!-- Contenido dinámico generado por renderGames() en script.js -->
-      </section>
+        <!-- Vista: Actividad reciente -->
+        <div id="view-recent"       class="c-view hidden"></div>
 
-      <!-- ── SECCIÓN: Amigos ── -->
-      <section id="view-friends" class="section-view" aria-label="Lista de amigos"
-               aria-live="polite">
-        <!-- Contenido dinámico generado por renderFriends() en script.js -->
-      </section>
+        <!-- Vista: Juegos -->
+        <div id="view-games"        class="c-view hidden">
+          <div class="vt-bar">
+            <input type="text" class="vt-input" id="games-search" placeholder="Buscar juego…">
+            <select class="vt-select" id="games-sort">
+              <option value="hours">Más jugados</option>
+              <option value="name">Nombre A-Z</option>
+              <option value="recent">Recientes</option>
+            </select>
+          </div>
+          <div id="games-inner"></div>
+        </div>
 
-      <!-- ── SECCIÓN: Logros ── -->
-      <section id="view-achievements" class="section-view" aria-label="Logros por juego"
-               aria-live="polite">
-        <!-- Contenido dinámico generado por renderAchievements() en script.js -->
-      </section>
+        <!-- Vista: Logros -->
+        <div id="view-achievements"  class="c-view hidden">
+          <div class="vt-bar">
+            <label for="ach-select">Juego:</label>
+            <select class="vt-select" id="ach-select" style="flex:1;min-width:0"></select>
+            <button class="vt-btn" id="btn-load-ach">Cargar logros</button>
+          </div>
+          <div id="ach-inner"></div>
+        </div>
 
-      <!-- ── SECCIÓN: Baneos ── -->
-      <section id="view-bans" class="section-view" aria-label="Información de baneos"
-               aria-live="polite">
-        <!-- Contenido dinámico generado por renderBans() en script.js -->
-      </section>
+        <!-- Vista: Amigos -->
+        <div id="view-friends"       class="c-view hidden"></div>
 
+        <!-- Vista: Baneos -->
+        <div id="view-bans"          class="c-view hidden"></div>
+
+        <!-- Vista: Videos -->
+        <div id="view-videos"        class="c-view hidden">
+          <div class="ph-view"><div class="ph-icon">🎬</div><p>Videos no disponibles en la API pública de Steam.</p></div>
+        </div>
+
+        <!-- Vista: Capturas -->
+        <div id="view-screenshots"   class="c-view hidden">
+          <div class="ph-view"><div class="ph-icon">📷</div><p>Capturas no disponibles en la API pública de Steam.</p></div>
+        </div>
+      </div>
     </main>
-  </div><!-- /#app-layout -->
 
-  <!-- ╔═══════════════════════════════════════╗
-       ║         OVERLAYS GLOBALES             ║
-       ╚═══════════════════════════════════════╝ -->
+    <!-- COLUMNA DERECHA: menú vertical (igual que la imagen) -->
+    <nav id="right-nav">
+      <ul>
+        <li class="rn-item active" data-section="recent">Actividad reciente</li>
+        <li class="rn-item"        data-section="games">Juegos</li>
+        <li class="rn-item"        data-section="achievements">Logros</li>
+        <li class="rn-item"        data-section="friends">Amigos</li>
+        <li class="rn-item"        data-section="bans">Baneos</li>
+        <li class="rn-item"        data-section="videos">Videos</li>
+        <li class="rn-item"        data-section="screenshots">Capturas</li>
+      </ul>
+    </nav>
 
-  <!-- Indicador de carga -->
-  <div id="loading-overlay" role="status" aria-live="polite" aria-label="Cargando datos">
-    <div class="spinner" aria-hidden="true"></div>
-    <p class="loading-text">Consultando la API de Steam…</p>
-  </div>
+  </div><!-- /#app-body -->
 
-  <!-- Contenedor de toasts (notificaciones) -->
-  <div id="toast-container" role="log" aria-live="polite" aria-label="Notificaciones"></div>
+  <div id="toast-container" aria-live="polite"></div>
 
-  <!-- Clase utilitaria para accesibilidad (texto solo para lectores de pantalla) -->
-  <style>
-    .sr-only {
-      position: absolute;
-      width: 1px; height: 1px;
-      padding: 0; margin: -1px;
-      overflow: hidden;
-      clip: rect(0,0,0,0);
-      white-space: nowrap;
-      border: 0;
-    }
-  </style>
-
-  <!-- Scripts: primero la configuración, luego la lógica principal -->
   <script src="config.js"></script>
   <script src="script.js"></script>
 </body>
