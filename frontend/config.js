@@ -8,7 +8,7 @@ const CONFIG = {
   // ─── Proxy CORS ────────────────────────────────────────────────────────────
   // La Steam Web API no permite llamadas directas desde el navegador (CORS bloqueado).
   // Usamos un proxy público para desarrollo local. En producción, usa tu propio backend.
-  CORS_PROXY: "https://corsproxy.io/?",
+  BACKEND_URL: "http://localhost:3000",
 
   // ─── Base URLs ──────────────────────────────────────────────────────────────
   STEAM_API_BASE: "https://api.steampowered.com",

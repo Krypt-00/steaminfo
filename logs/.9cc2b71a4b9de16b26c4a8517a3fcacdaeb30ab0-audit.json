@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/home/krypt/Desktop/dev/steaminfo/logs/.9cc2b71a4b9de16b26c4a8517a3fcacdaeb30ab0-audit.json",
+    "files": [
+        {
+            "date": 1777908341185,
+            "name": "/home/krypt/Desktop/dev/steaminfo/logs/error-2026-05-04.log",
+            "hash": "fd20fbe85ed03a8ac53546787284011632697a7d50fa9f481fd4fbbdebbc54b6"
+        }
+    ],
+    "hashType": "sha256"
+}

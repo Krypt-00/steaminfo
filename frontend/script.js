@@ -52,20 +52,21 @@ const Cache = {
 };
 
 /* ═══════════════════════════════════════
-   PETICIONES A LA API
+   PETICIONES A LA API (vía backend)
    ═══════════════════════════════════════ */
-async function steamFetch(endpoint, params = {}) {
-  const url = new URL(CONFIG.STEAM_API_BASE + endpoint);
-  url.searchParams.set("key",    STATE.apiKey);
-  url.searchParams.set("format", "json");
+async function apiFetch(route, params = {}) {
+  const url = new URL(CONFIG.BACKEND_URL + "/api/steam" + route);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
-  const proxied = CONFIG.CORS_PROXY + encodeURIComponent(url.toString());
-  const res = await fetch(proxied);
+  const res = await fetch(url.toString(), {
+    headers: { "X-Steam-API-Key": STATE.apiKey },
+  });
   if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
     if (res.status === 429) throw new Error(CONFIG.ERRORS.RATE_LIMIT);
-    if (res.status === 403) throw new Error(CONFIG.ERRORS.API_ERROR);
-    throw new Error(`HTTP ${res.status}`);
+    if (res.status === 403) throw new Error(body.error || CONFIG.ERRORS.API_ERROR);
+    if (res.status === 401) throw new Error(body.error || CONFIG.ERRORS.API_ERROR);
+    throw new Error(body.error || `HTTP ${res.status}`);
   }
   return res.json();
 }
@@ -78,7 +79,7 @@ async function resolveSteamId(input) {
   const cKey = "vanity_" + input;
   const cached = Cache.get(cKey);
   if (cached) return cached;
-  const data = await steamFetch(CONFIG.ENDPOINTS.RESOLVE_VANITY, { vanityurl: input });
+  const data = await apiFetch("/resolve", { vanityurl: input });
   if (data?.response?.success === 1) { Cache.set(cKey, data.response.steamid); return data.response.steamid; }
   throw new Error(CONFIG.ERRORS.VANITY_NOT_FOUND);
 }
@@ -87,7 +88,7 @@ async function fetchPlayerSummary(id) {
   const cKey = "sum_" + id;
   const cached = Cache.get(cKey);
   if (cached) return cached;
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, { steamids: id });
+  const data = await apiFetch("/summaries", { steamids: id });
   const p = data?.response?.players?.[0];
   if (!p) throw new Error(CONFIG.ERRORS.INVALID_STEAM_ID);
   Cache.set(cKey, p);
@@ -98,7 +99,7 @@ async function fetchOwnedGames(id) {
   const cKey = "owned_" + id;
   const c = Cache.get(cKey);
   if (c) return c;
-  const data = await steamFetch(CONFIG.ENDPOINTS.OWNED_GAMES, { steamid: id, include_appinfo: 1, include_played_free_games: 1 });
+  const data = await apiFetch("/games", { steamid: id, include_appinfo: 1, include_free: 1 });
   const g = data?.response?.games || [];
   Cache.set(cKey, g);
   return g;
@@ -108,7 +109,7 @@ async function fetchRecentGames(id) {
   const cKey = "recent_" + id;
   const c = Cache.get(cKey);
   if (c) return c;
-  const data = await steamFetch(CONFIG.ENDPOINTS.RECENT_GAMES, { steamid: id, count: 10 });
+  const data = await apiFetch("/recent", { steamid: id, count: 10 });
   const g = data?.response?.games || [];
   Cache.set(cKey, g);
   return g;
@@ -118,7 +119,7 @@ async function fetchFriends(id) {
   const cKey = "friends_" + id;
   const c = Cache.get(cKey);
   if (c) return c;
-  const data = await steamFetch(CONFIG.ENDPOINTS.FRIEND_LIST, { steamid: id, relationship: "friend" });
+  const data = await apiFetch("/friends", { steamid: id, relationship: "friend" });
   const f = data?.friendslist?.friends || [];
   Cache.set(cKey, f);
   return f;
@@ -128,7 +129,7 @@ async function fetchFriendsSummaries(ids) {
   const cKey = "fsum_" + ids.slice(0, 5).join("_");
   const c = Cache.get(cKey);
   if (c) return c;
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_SUMMARIES, { steamids: ids.join(",") });
+  const data = await apiFetch("/friends/summaries", { steamids: ids.join(",") });
   const p = data?.response?.players || [];
   Cache.set(cKey, p);
   return p;
@@ -138,7 +139,7 @@ async function fetchBans(id) {
   const cKey = "bans_" + id;
   const c = Cache.get(cKey);
   if (c) return c;
-  const data = await steamFetch(CONFIG.ENDPOINTS.PLAYER_BANS, { steamids: id });
+  const data = await apiFetch("/bans", { steamids: id });
   const b = data?.players?.[0] || null;
   Cache.set(cKey, b);
   return b;
@@ -148,14 +149,9 @@ async function fetchAchievements(steamId, appId) {
   const cKey = "ach_" + steamId + "_" + appId;
   const c = Cache.get(cKey);
   if (c) return c;
-  const [playerR, schemaR] = await Promise.allSettled([
-    steamFetch(CONFIG.ENDPOINTS.ACHIEVEMENTS, { steamid: steamId, appid: appId, l: "spanish" }),
-    steamFetch(CONFIG.ENDPOINTS.GAME_SCHEMA,  { appid: appId, l: "spanish" }),
-  ]);
-  if (playerR.status === "rejected") throw new Error(CONFIG.ERRORS.NO_ACHIEVEMENTS);
-  const playerAchs = playerR.value?.playerstats?.achievements || [];
-  const schemaAchs = schemaR.status === "fulfilled"
-    ? (schemaR.value?.game?.availableGameStats?.achievements || []) : [];
+  const data = await apiFetch("/achievements", { steamid: steamId, appid: appId, language: "spanish" });
+  const playerAchs = data?.achievements?.playerstats?.achievements || [];
+  const schemaAchs = data?.schema?.game?.availableGameStats?.achievements || [];
   const schemaMap = Object.fromEntries(schemaAchs.map(a => [a.name, a]));
   const combined = playerAchs.map(a => ({
     ...a,
